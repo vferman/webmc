@@ -23,7 +23,7 @@ sameOriginPolicy rOrigin rule
     |originServer == destinationServer = True
     |otherwise = False
     where (Rule {rType = RuleType reqType cType, rMethod = _,
-            rUrl = Url {server = destinationServer, path = _ },
+            rUrl = Left Url {server = destinationServer, path = _ },
             rContents = _ }) = rule
           (Url {server = originServer, path = _}) = rOrigin
 
@@ -53,6 +53,6 @@ contentSecurityPolicy policies rule =
         ((iRType == Scripted && (elem "javascript://" sList || null sList)) ||
             iRType == Normal)
     where ( Rule {rType = RuleType iRType cType, rMethod = _,
-             rUrl = Url { server = destinationServer, path = _ },
+             rUrl = Left Url { server = destinationServer, path = _ },
              rContents = _ }) = rule
           (Csp {scriptList = sList, frameList = fList, resourceList = rList}) = policies
