@@ -13,10 +13,11 @@ module User
 , module Types
 )where
 
-import Types
---import Messages
-import Data.Char
-import qualified Data.Map as Map
+import           Data.Char
+import qualified Data.Map  as Map
+import           Types
+import Debug.Trace
+
 
 {-
     Function used to calculate what are the possible actions of a user.
@@ -25,49 +26,45 @@ import qualified Data.Map as Map
     forms.
 
 -}
-actions:: Display -> [String]
-actions display
-    | bVal && fVal= ["url","null","back","forward"] ++ otherActions
-    | bVal = ["url","null","back"] ++ otherActions
-    | fVal = ["url","null","forward"] ++ otherActions
-    | otherwise = ["url", "null"] ++ otherActions
+actions:: User -> Display -> [String]
+actions cUser display
+    | bVal && fVal= ["U -> B: back","U -> B: forward"] ++ urlInput ++ otherActions
+    | bVal = ["U -> B: back"] ++ urlInput ++ otherActions
+    | fVal = ["U -> B: forward"] ++ urlInput ++ otherActions
+    | otherwise = urlInput ++ otherActions
     where (Display { lock = _, location = _, visibleLinks = visible,
              visibleForms = vForms, back = bVal, forward = fVal}) = display
           formActions = if not (Map.null vForms)
-                          then map (\ (k,v) -> show k ++ " "
-                            ++ concatMap (++ " ") v) $ Map.toList vForms
+                          then map (\(k, v) -> "U -> B: " ++ show k ++ " "
+                            ++ unwords v) $ Map.toList vForms
                           else []
-          linkActions = if not (null visible) then map show visible else []
+          linkActions = if not (null visible)
+                            then map (\e -> "U -> B: Click" ++ show e) visible
+                            else []
           otherActions = linkActions ++ formActions
+          urlInput = map (\url -> "U -> B: "++ show url) (knownUrls cUser)
 
---Auxiliar function to access specific user data
-getIdentifierData:: (k -> v -> Bool) -> [Map.Map k v] -> Map.Map k v
-getIdentifierData _ [] = Map.empty
-getIdentifierData f (x:_) = Map.filterWithKey f x
 
 -- Auxiliar function to get data from the user, in case its needed for an
 -- event and it exists in its knowledge base
 getUserKnowledge:: User -> [Domain] -> [String] -> Known
 getUserKnowledge iUser domainList identifiers =
-    getIdentifierData (\k _ -> elem k identifiers) $ Map.elems matchingDomains
-    where (User {userIdentifier = _, userKnowledge = uKnown,
-            knownUrls = _}) = iUser
-          matchingDomains = Map.filterWithKey (\k _ -> elem k domainList) uKnown
+    Map.filterWithKey (\k _ -> elem k identifiers) $
+      Map.unions (gKnown : Map.elems matchingDomains)
+    where (User {generalKnowledge = gKnown, domainKnowledge = dKnown }) = iUser
+          matchingDomains = Map.filterWithKey (\k _ -> elem k domainList) dKnown
 
 -- Function to go from an string to an actual input
-optionToEvent:: String -> User -> Maybe Url -> Maybe UserInput
-optionToEvent option iUser (Just url)
-    | act=="url" = Just (Address url)
-    | all isDigit act && not (null params) = Just (Form (FormInput
-                                               (getUserKnowledge iUser [domain]
-                                               params) (stringToPos act)))
-    | otherwise=Nothing
-    where (act:params)=words option
-          (Url {server = domain, path = _ }) = url
-optionToEvent option _ Nothing
-    | act=="null" = Just Null
+optionToEvent:: String -> User -> Maybe UserInput
+optionToEvent option iUser
+    | act=="Url" = Just (Address (read $ unwords (act:params)))
+    | all isDigit act && null params= Just (Position $ stringToPos act)
+    | all isDigit act && not (null params) =
+          let (sUrl, query)= break (=='}') (unwords params)
+          in Just (Form (FormInput (getUserKnowledge iUser
+            [server (read (sUrl++"}"))] (words (drop 2 query)))
+            (stringToPos act)))
     | act=="back" = Just Back
     | act=="forward" = Just Forward
-    | all isDigit act && null params= Just (Position $ stringToPos act)
-    | otherwise=Nothing
-    where (act:params)=words option
+    | otherwise = Nothing
+    where (act:params)=words $ drop 8 option
