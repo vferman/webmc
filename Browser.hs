@@ -13,8 +13,30 @@ module Browser where
 import qualified Data.List  as List
 import qualified Data.Map   as Map
 import           Data.Maybe
+import Data.Either
 import           Policies
 import           Types
+
+
+{-
+    Functions in charge of instantiating browsers and of getting the actions
+    that can be performed at any given time useful for the Planner
+-}
+getBrowserActions :: Browser -> [String]
+getBrowserActions = browserActions
+
+initBrowser :: String -> Visited -> Map.Map Url WebFile -> Maybe WebPage ->
+  Maybe WebPage -> [(Nonce,Rule)] -> [Rule] -> [Int] -> Browser
+initBrowser bID history cookies cWeb oWeb pRes pReq nonceL =
+    Browser { browserIdentifier = bID, visitedPages = history, files = cookies,
+      current = cWeb, original = oWeb, pendingResponses = pRes,
+      pendingRequest = pReq, bNonceList = nonceL }
+
+initEmptyBrowser:: String -> Browser
+initEmptyBrowser bID =
+    initBrowser bID history Map.empty Nothing Nothing [] [] [1..]
+    where history = Visited { previous = [], next = [] }
+
 
 
 
@@ -43,7 +65,7 @@ ruleToRequest:: Rule -> String -> Nonce -> Request
 ruleToRequest cRule bID cNonce =
     Request { originIdentifier = bID, destination = ruleUrl,
       reqNonce = cNonce, method = cMethod, payload = rPayload}
-    where ( Rule {rType = _, rMethod = cMethod, rUrl = ruleUrl,
+    where ( Rule {rType = _, rMethod = cMethod, rUrl = Left ruleUrl,
             rContents = rPayload }) = cRule
 
 --Function used to transform instructions to their corresponding requests
@@ -57,19 +79,21 @@ getRequest cBrowser
                     files = bF,current = bCW, original = bOW,
                     pendingResponses = bPR, pendingRequest = bPReq,
                     bNonceList = drop 1 bNL}, Just ( ruleToRequest
-                      (fromJust cRule) bID (bID ++ show (head bNL))) )
+                      (fromJust cRule) bID nonce ))
     where (Browser {browserIdentifier = bID, visitedPages = bVP, files = bF,
             current = bCW, original = bOW, pendingResponses = bPR,
             pendingRequest = bPReq, bNonceList = bNL})= cBrowser
           cRule = getRuleFromBrowser cBrowser
+          nonce = "nonce" ++ bID ++ show (head bNL)
 
 --Fuction used to lookup if there is a request to a given url
-lookupRule:: Url -> [Rule] -> Maybe Rule
-lookupRule _ [] = Nothing
-lookupRule myUrl (x:xs)
-    | myUrl == ruleUrl = Just x
-    | otherwise = lookupRule myUrl xs
-    where (Rule {rUrl = ruleUrl }) = x
+lookupRule:: Url -> Nonce-> [(Nonce,Rule)] -> Maybe Rule
+lookupRule _ _ [] = Nothing
+lookupRule resUrl rNonce (x:xs)
+    | resUrl == ruleUrl && rNonce == nonce = Just rule
+    | otherwise = lookupRule resUrl rNonce xs
+    where (nonce, rule) = x
+          (Rule {rUrl = Left ruleUrl }) = rule
 
 
 --Function to merge web files (e.g. cookies)
@@ -149,8 +173,8 @@ newBrowserFromResponse cBrowser response rule
              files = fInfo, current = cWeb, original = oWeb,
              pendingResponses = pendingRes, pendingRequest = pendingReq,
              bNonceList=bNL }) = cBrowser
-          (Response { componentList = elemList, instructionList = iList,
-             fileList =fList })= response
+          (Response { componentList = elemList, resNonce =rNonce,
+             instructionList = iList, fileList =fList })= response
           (Rule {rType = RuleType _ cType })=rule
           (Just WebPage {wOrigin = oUrl }) = cWeb
           (Visited { previous = backList }) =visitedWeb
@@ -170,7 +194,7 @@ newBrowserFromResponse cBrowser response rule
                              else oWeb
           newPendingRes = if cType == Full
                             then []
-                            else List.delete rule pendingRes
+                            else List.delete (rNonce, rule) pendingRes
           newPendingReq
               | cType == Full = getRulesFromWeb newOriginalWeb
               | cType == Script || cType == Frame =
@@ -184,8 +208,9 @@ responseReceived cBrowser response
     | isNothing rule = cBrowser
     | otherwise = newBrowserFromResponse cBrowser response (fromJust rule)
     where (Browser {pendingResponses = pendingRes }) = cBrowser
-          (Response { origin = url }) = response
-          rule = lookupRule url pendingRes
+          url = origin response
+          nonce = resNonce response
+          rule = lookupRule url nonce pendingRes
 
 
 
@@ -194,8 +219,15 @@ responseReceived cBrowser response
       server
 -}
 
-requestSent::Browser -> Browser
-requestSent cBrowser =
+ruleToResponses:: Maybe Rule -> Nonce -> [(Nonce, Rule)] -> [(Nonce,Rule)]
+ruleToResponses Nothing _ responses = responses
+ruleToResponses (Just rule) nonce responses
+    | cType == Full = [(nonce,rule)]
+    | otherwise = (nonce, rule):responses
+    where (RuleType _ cType)=rType rule
+
+requestSent::Browser -> Request -> Browser
+requestSent cBrowser req =
     Browser {browserIdentifier=bID, visitedPages = visitedWeb, files = fInfo,
       current = currentWeb, original = originalWeb,
       pendingResponses = newPendingRes, pendingRequest = newPendingReq,
@@ -204,9 +236,10 @@ requestSent cBrowser =
             files = fInfo, current = currentWeb, original = originalWeb,
             pendingResponses = pendingRes, pendingRequest = pendingReq,
             bNonceList = bNL}) = cBrowser
-          newPendingRes = if null pendingReq
-                            then pendingRes
-                            else (head pendingReq):pendingRes
+          rule = if null pendingReq
+                   then Nothing
+                   else Just (head pendingReq)
+          newPendingRes = ruleToResponses rule (reqNonce req) pendingRes
           newPendingReq = if null pendingReq
                             then []
                             else tail pendingReq
@@ -220,10 +253,10 @@ requestSent cBrowser =
 newRule:: Url -> Maybe WebFile-> Rule
 newRule url Nothing =
     Rule {rType = RuleType Normal Full,
-      rMethod=Get, rUrl=url, rContents=Map.empty}
+      rMethod=Get, rUrl=Left url, rContents=Map.empty}
 newRule url (Just file) =
     Rule {rType = RuleType Normal Full,
-      rMethod=Get, rUrl=url, rContents = fileContents}
+      rMethod=Get, rUrl=Left url, rContents = fileContents}
     where (WebFile {fContent = fileContents })=file
 
 
@@ -295,69 +328,66 @@ getRulesForPosition pos formData instList components =
 --  possible user inputs, returns the new state of the browser and a list of
 --  instructions that need to be carried out
 userInputReceived:: Browser -> UserInput -> Browser
-userInputReceived currentBrowser (Address url) =
+userInputReceived cBrowser (Address url) =
     Browser {browserIdentifier = bID, visitedPages = visitedWeb, files = fInfo,
         current=currentWeb, original=originalWeb, pendingResponses=[],
         pendingRequest=[nRule], bNonceList = bNL }
     where (Browser {browserIdentifier=bID, visitedPages = visitedWeb,
             files = fInfo, current = currentWeb, original = originalWeb,
-            bNonceList = bNL}) = currentBrowser
+            bNonceList = bNL}) = cBrowser
           bData = Map.lookup url fInfo
           nRule = newRule url bData
 
-userInputReceived currentBrowser (Position pos) =
+userInputReceived cBrowser (Position pos) =
     Browser {browserIdentifier = bID, visitedPages = visitedWeb, files = fInfo,
         current=currentWeb, original=originalWeb, pendingResponses = pendingRes,
         pendingRequest = reqList, bNonceList = bNL}
     where (Browser {browserIdentifier=bID, visitedPages = visitedWeb,
             files = fInfo, current = currentWeb, original = originalWeb,
             pendingResponses = pendingRes, pendingRequest = pendingReq,
-            bNonceList = bNL}) = currentBrowser
+            bNonceList = bNL}) = cBrowser
           (Just (WebPage {wCsp = rCsp, wElem = components,
             wInstructions = (PageInstructions
             { conditionalList = condList }) })) = currentWeb
           rules = getRulesForPosition pos Nothing condList components
           reqList= filter (contentSecurityPolicy rCsp) $ rules++pendingReq
 
-userInputReceived currentBrowser (Form (FormInput knowledge pos)) =
+userInputReceived cBrowser (Form (FormInput knowledge pos)) =
     Browser {browserIdentifier = bID, visitedPages = visitedWeb, files = fInfo,
         current=currentWeb, original=originalWeb, pendingResponses = pendingRes,
         pendingRequest = reqList, bNonceList = bNL }
     where (Browser {browserIdentifier=bID, visitedPages = visitedWeb,
             files = fInfo, current = currentWeb, original = originalWeb,
             pendingResponses = pendingRes, pendingRequest = pendingReq,
-            bNonceList = bNL }) = currentBrowser
+            bNonceList = bNL }) = cBrowser
           (Just (WebPage {wCsp = rCsp, wElem = components,
             wInstructions = (PageInstructions
             { conditionalList = condList }) })) = currentWeb
           rules = getRulesForPosition pos (Just knowledge) condList components
           reqList= filter (contentSecurityPolicy rCsp) $ rules++pendingReq
 
-userInputReceived currentBrowser (Back) =
+userInputReceived cBrowser Back =
     Browser {browserIdentifier=bID,
         visitedPages = Visited { previous = xs, next = oWeb:forwardList },
         files = fInfo, current = x, original = x, pendingResponses = [],
         pendingRequest = reqList, bNonceList = bNL}
     where (Browser {browserIdentifier=bID,
             visitedPages = (Visited { previous = (x:xs), next = forwardList }),
-            files = fInfo, original = oWeb, bNonceList = bNL }) = currentBrowser
-          (Just (WebPage { wInstructions = (PageInstructions
-            { autoList = aList }) })) = x
+            files = fInfo, original = oWeb, bNonceList = bNL }) = cBrowser
+          aList = maybe [] (\wp -> autoList (wInstructions wp)) x
           reqList = map ruleFromInstruction aList
 
-userInputReceived currentBrowser (Forward) =
+userInputReceived cBrowser Forward =
     Browser {browserIdentifier=bID,
        visitedPages = Visited { previous = oWeb:backList, next = ys },
        files = fInfo, current = y, original = y, pendingResponses = [],
        pendingRequest = reqList, bNonceList = bNL}
     where (Browser {browserIdentifier=bID,
             visitedPages = (Visited { previous = backList, next = (y:ys) }),
-            files = fInfo, original = oWeb, bNonceList = bNL}) = currentBrowser
+            files = fInfo, original = oWeb, bNonceList = bNL}) = cBrowser
           (Just (WebPage { wInstructions = (PageInstructions
             { autoList = aList }) })) = y
           reqList = map ruleFromInstruction aList
-
-userInputReceived currentBrowser (Null) = currentBrowser
 
 
 {-
@@ -379,11 +409,12 @@ instructionUserData (x:xs) = info++instructionUserData xs
 
 --Auxiliar function for a fold, transforms a component to links and forms
 fromComponent:: ([Int], [(Int, [String])]) -> Component -> ([Int], [(Int, [String])])
-fromComponent (links, forms) (Component {cOrigin=_, cList=iList, cPos=pos, cVisible=_})=
+fromComponent (links, forms) component=
     if null dataList
         then (pos:links, forms)
-        else (links, (pos, dataList):forms)
-    where dataList= instructionUserData iList
+        else (links, (pos, show myOrigin:dataList):forms)
+    where (Component {cOrigin=myOrigin, cList=iList, cPos=pos})= component
+          dataList= instructionUserData iList
 
 --Auxiliar fuction to get the origin out of a web page
 getLocation:: Maybe WebPage -> Url
@@ -417,3 +448,16 @@ generateDisplay cBrowser =
           originUrl= getLocation cWeb
           currentComponents = getComponents cWeb
           (vLinks, vForms)=getDisplayElems $ filter isVisible currentComponents
+
+
+browserActions :: Browser -> [String]
+browserActions cBrowser
+    | not (null req) = let r = either server id $ rUrl (head req)
+                       in ["B -> "++ r ++": request"]
+    | otherwise = []
+    where req = pendingRequest cBrowser
+
+browserOptionToEvent :: Browser -> String -> (Browser, Maybe Request)
+browserOptionToEvent cBrowser input
+    | last (words input) == "request" = getRequest cBrowser
+    | otherwise = (cBrowser, Nothing)
