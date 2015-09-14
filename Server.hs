@@ -9,10 +9,10 @@ Description: This file defines a generic server's actions an capabilities,
 
 module Server where
 
-import qualified Data.Map   as Map
+import qualified Data.Map    as Map
 import           Data.Maybe
+import           Debug.Trace
 import           Types
-import Debug.Trace
 
 
 {-
@@ -374,3 +374,25 @@ serverOptionToEvent cServer option
         in (nServer, req, Nothing)
     | otherwise = (cServer, Nothing, Nothing)
     where (value:params) = drop 3 (words option)
+
+serverStatus :: Server -> [String]
+serverStatus cServer =
+    [sID++" is:\n Waiting for Requests"] ++ req ++ res ++ res2
+    where (Server { serverIdentifier= sID, pendingSRequests = sPReq,
+            expectedResponses= eSResp, pendingSResponses = spRes }) = cServer
+          disabledReq = Map.fold (\a accum -> fst a :accum) [] eSResp
+          pRequests = filter (`notElem` disabledReq)
+            (Map.keys $ Map.filter (\a -> not (null a)) sPReq)
+          pResp = filter (`notElem` disabledReq)
+            $ Map.keys (Map.filter null sPReq)
+          pResponses =
+            Map.keys (Map.filterWithKey (\k _ -> k `elem` pResp) spRes)
+          req = if null pRequests
+                    then []
+                    else [" Can send requests"]
+          res = if null pResponses
+                    then []
+                    else [" Can send responses"]
+          res2 = if Map.null eSResp
+                    then []
+                    else [" Is expecting Responses"]

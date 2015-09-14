@@ -1,15 +1,15 @@
 import           Browser
 import           Data.Char
-import qualified Data.Map   as Map
+import qualified Data.Map    as Map
 import           Data.Maybe
 --import           OIDServer
-import SamlServer
-import Attacker
+import           Attacker
+import           Debug.Trace
 import           Planner
+import           SamlServer
 import           Server
 import           Types
 import           User
-import Debug.Trace
 
 printActions:: User -> Browser -> [Server] -> IO ()
 printActions _ _ [] = putStrLn "Error"
@@ -19,15 +19,26 @@ printActions cUser cBrowser sList = do
     where userActions = getUserActions cUser (generateDisplay cBrowser)
           bActions = getBrowserActions cBrowser
           sActions = foldl (\accum cServer -> accum ++ getServerActions cServer) [] sList
-          resultingActions = "return":(userActions ++ bActions ++ sActions)
-          tempActions = zipWith (\n action -> show n ++ " - " ++ action) [0..] resultingActions
+          resultingActions = userActions ++ bActions ++ sActions
+          tempActions = zipWith (\n action -> show n ++ " - " ++ action) [1..] resultingActions
           serverTitle = "Server Actions:":drop (length userActions +
-                          length bActions + 1) tempActions
+                          length bActions) tempActions
           browserTitle = "Browser Actions:": take (length bActions)
-                           (drop (length userActions +1) tempActions)
-          userTitle = head tempActions: "User Actions:": take
-                        (length userActions) (tail tempActions)
-          toPrint = unlines $ userTitle ++ browserTitle ++ serverTitle
+                           (drop (length userActions) tempActions)
+          userTitle = "User Actions:": take (length userActions) tempActions
+          defaultActions = ["Syustem Actions:",
+            "R - Return to a previous State", "S - Print system status"]
+          toPrint = unlines $ defaultActions ++ userTitle ++ browserTitle ++
+            serverTitle
+
+printStatus:: Browser -> [Server] -> IO ()
+printStatus cBrowser sList = do
+    putStrLn ""
+    putStr res
+    putStrLn ""
+    where bStatus = getBrowserStatus cBrowser
+          sStatus = foldl (\a s -> a ++ serverStatus s) [] sList
+          res = unlines (bStatus ++ sStatus)
 
 reqToServer :: Request -> Server -> Server
 reqToServer req cServer
@@ -78,7 +89,7 @@ executeOption cUser cBrowser sList cAttacker option
         let bOption = option - lUActions - 1
             (tempBrowser, req) = browserOptionToEvent cBrowser
                                 (bActions !! bOption)
-            nBrowser = maybe cBrowser (\req -> requestSent tempBrowser req) req
+            nBrowser = maybe cBrowser (requestSent tempBrowser) req
             nSList = maybe sList (\reqValue -> map (reqToServer reqValue) sList)
                        req
             nAttacker = getInfoFromServerList cAttacker nSList
@@ -124,15 +135,23 @@ loop cUser cBrowser sList cAttacker= do
     printActions cUser cBrowser sList
     putStrLn "What would you like to do?"
     option <- getLine
-    if not (null option) && all isDigit option
-        then if read option == 0
+    if not (null option)
+        then if option == "R"
             then do
                 putStrLn "returning to a prevous state"
                 putStrLn ""
                 return ()
-            else do executeOption cUser cBrowser sList cAttacker (read option)
-                    loop cUser cBrowser sList cAttacker
-        else do putStrLn "Please input a valid option, only digits are allowed"
+            else if option == "S"
+                then do putStrLn "Printing System Status"
+                        printStatus cBrowser sList
+                        loop cUser cBrowser sList cAttacker
+                else if all isDigit option
+                    then do executeOption cUser cBrowser sList cAttacker
+                              (read option)
+                            loop cUser cBrowser sList cAttacker
+                    else do putStrLn "Please input a valid option"
+                            loop cUser cBrowser sList cAttacker
+        else do putStrLn "Please input a valid option"
                 loop cUser cBrowser sList cAttacker
 
 main:: IO ()
@@ -150,5 +169,5 @@ main = do
           uDKnown = Map.fromList [("rp", uKnown), ("idp", uKnown)]
           myUser = initUser "user" gKnown uDKnown kUrls
           myBrowser = initEmptyBrowser "browser"
-          (myServers, goal) = getServers
-          myAttacker = initAttacker "attacker" ["rp"] goal [] Map.empty
+          (myServers, aGoal) = getServers
+          myAttacker = initAttacker "attacker" ["rp"] aGoal [] Map.empty

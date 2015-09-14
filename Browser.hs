@@ -10,10 +10,10 @@ Description: This file defines browser's actions an capabilities, used in order
 
 module Browser where
 
-import qualified Data.List  as List
-import qualified Data.Map   as Map
+import           Data.Either
+import qualified Data.List   as List
+import qualified Data.Map    as Map
 import           Data.Maybe
-import Data.Either
 import           Policies
 import           Types
 
@@ -461,3 +461,13 @@ browserOptionToEvent :: Browser -> String -> (Browser, Maybe Request)
 browserOptionToEvent cBrowser input
     | last (words input) == "request" = getRequest cBrowser
     | otherwise = (cBrowser, Nothing)
+
+getBrowserStatus :: Browser -> [String]
+getBrowserStatus cBrowser =
+    ["The Browser is:\n Waiting for user input"] ++ req ++ res
+    where req = if null (pendingRequest cBrowser)
+                    then []
+                    else [" Can send a request"]
+          res = if null (pendingResponses cBrowser)
+                    then []
+                    else [" Is expecting a response"]

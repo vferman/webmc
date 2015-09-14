@@ -9,7 +9,7 @@ Description: This file defines a generic Attacker's actions an capabilities,
 
 module Attacker where
 
-import qualified Data.Map   as Map
+import qualified Data.Map as Map
 import           Types
 
 initAttacker :: String -> [String] -> Request -> [String] -> Known -> Attacker

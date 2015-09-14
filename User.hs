@@ -14,9 +14,9 @@ module User
 )where
 
 import           Data.Char
-import qualified Data.Map  as Map
+import qualified Data.Map    as Map
+import           Debug.Trace
 import           Types
-import Debug.Trace
 
 
 {-
@@ -35,14 +35,14 @@ actions cUser display
     where (Display { lock = _, location = _, visibleLinks = visible,
              visibleForms = vForms, back = bVal, forward = fVal}) = display
           formActions = if not (Map.null vForms)
-                          then map (\(k, v) -> "U -> B: " ++ show k ++ " "
+                          then map (\(k, v) -> "U -> B: Form " ++ show k ++ " "
                             ++ unwords v) $ Map.toList vForms
                           else []
           linkActions = if not (null visible)
-                            then map (\e -> "U -> B: Click" ++ show e) visible
+                            then map (\e -> "U -> B: Click " ++ show e) visible
                             else []
           otherActions = linkActions ++ formActions
-          urlInput = map (\url -> "U -> B: "++ show url) (knownUrls cUser)
+          urlInput = map (\url -> "U -> B: Send_Url "++ show url) (knownUrls cUser)
 
 
 -- Auxiliar function to get data from the user, in case its needed for an
@@ -57,14 +57,15 @@ getUserKnowledge iUser domainList identifiers =
 -- Function to go from an string to an actual input
 optionToEvent:: String -> User -> Maybe UserInput
 optionToEvent option iUser
-    | act=="Url" = Just (Address (read $ unwords (act:params)))
-    | all isDigit act && null params= Just (Position $ stringToPos act)
-    | all isDigit act && not (null params) =
-          let (sUrl, query)= break (=='}') (unwords params)
+    | act == "Send_Url" = Just (Address (read $ unwords params))
+    | act == "Click" && length params == 1 && all isDigit (head params) =
+          Just (Position $ stringToPos (head params))
+    | act == "Form" && length params > 1 && all isDigit (head params)=
+          let (sUrl, query)= break (=='}') (unwords (tail params))
           in Just (Form (FormInput (getUserKnowledge iUser
             [server (read (sUrl++"}"))] (words (drop 2 query)))
-            (stringToPos act)))
-    | act=="back" = Just Back
-    | act=="forward" = Just Forward
+            (stringToPos (head params))))
+    | act == "back" = Just Back
+    | act == "forward" = Just Forward
     | otherwise = Nothing
     where (act:params)=words $ drop 8 option

@@ -7,9 +7,9 @@ Description: This file defines the SAML Server used for tests etc
 
 module SamlServer where
 
-import Types
-import Server
 import qualified Data.Map as Map
+import           Server
+import           Types
 
 rpServer :: String -> Server
 rpServer sName = initEmptyServer sName [] ruleMap
@@ -81,5 +81,5 @@ getServers = ([idpS, rpS, rp2S], req)
     where idpS= idpServer "idp"
           rpS = rpServer "rp"
           rp2S = rpServer "rp2"
-          knowledge = Map.fromList [("authAssert", "")]
+          knowledge = Map.fromList [("authAssert", "sig idp idp pk_idp")]
           req = Request "" (Url "rp2" "three") "" Post knowledge
