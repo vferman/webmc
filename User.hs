@@ -28,10 +28,11 @@ import           Types
 -}
 actions:: User -> Display -> [String]
 actions cUser display
-    | bVal && fVal= ["U -> B: back","U -> B: forward"] ++ urlInput ++ otherActions
-    | bVal = ["U -> B: back"] ++ urlInput ++ otherActions
-    | fVal = ["U -> B: forward"] ++ urlInput ++ otherActions
-    | otherwise = urlInput ++ otherActions
+    | bVal && fVal= otherActions ++ urlInput ++
+                      ["U -> B: back","U -> B: forward"]
+    | bVal = otherActions ++ urlInput ++ ["U -> B: back"] 
+    | fVal = otherActions ++ urlInput ++ ["U -> B: forward"]
+    | otherwise = otherActions ++ urlInput
     where (Display { lock = _, location = _, visibleLinks = visible,
              visibleForms = vForms, back = bVal, forward = fVal}) = display
           formActions = if not (Map.null vForms)
