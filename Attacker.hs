@@ -14,15 +14,16 @@ import           Types
 
 initAttacker :: String -> [String] -> Request -> [String] -> Known -> Attacker
 initAttacker aID corruptSID aGoal autoGen aKnown =
-    Attacker { attackerIdentifier = aID, serverIDs = corruptSID, goal = aGoal,
-                generated = autoGen, acquiredInfo = Map.empty,
-                attackerKnowledge = aKnown, aNonceList = [1..] }
+    Attacker { attackerIdentifier = aID, acquiredKeys = [],
+                serverIDs = corruptSID, goal = aGoal, generated = autoGen,
+                acquiredInfo = Map.empty, attackerKnowledge = aKnown,
+                aNonceList = [1..] }
 
 getInfoFromServer :: Attacker -> Server -> Attacker
 getInfoFromServer attackr servr
     | serverIdentifier servr `elem` corruptSID =
-          Attacker { attackerIdentifier = aID, serverIDs = corruptSID,
-            goal = aGoal, generated = autoGen,
+          Attacker { attackerIdentifier = aID, acquiredKeys = kList,
+            serverIDs = corruptSID, goal = aGoal, generated = autoGen,
             acquiredInfo = Map.union browserInfo aInfo,
             attackerKnowledge = aKnown, aNonceList = aNL }
     | otherwise = attackr
@@ -30,6 +31,7 @@ getInfoFromServer attackr servr
             goal = aGoal, generated = autoGen, acquiredInfo = aInfo,
             attackerKnowledge = aKnown, aNonceList = aNL }) = attackr
           sessions = serverSession servr
+          kList = privateKey servr:knownKeys servr
           browserInfo = Map.foldWithKey
             (\_ value accum -> Map.unions
                [maybe Map.empty (`Map.singleton` value)
