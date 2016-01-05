@@ -10,9 +10,8 @@ Description: This file defines browser's actions an capabilities, used in order
 
 module Browser where
 
-import           Data.Either
-import qualified Data.List   as List
-import qualified Data.Map    as Map
+import qualified Data.List  as List
+import qualified Data.Map   as Map
 import           Data.Maybe
 import           Policies
 import           Types
@@ -307,7 +306,7 @@ getInstructionsForInput Nothing instructions =
 getInstructionsForInput (Just information) instructions=
     getInstructionsForInput Nothing instructions ++ completeForms
     where formInstructions = map (addDataToInstruction information) $
-            filter (\inst -> not (isComplete inst)) instructions
+            filter (not . isComplete) instructions
           completeForms = filter isComplete formInstructions
 
 
@@ -374,7 +373,7 @@ userInputReceived cBrowser Back =
     where (Browser {browserIdentifier=bID,
             visitedPages = (Visited { previous = (x:xs), next = forwardList }),
             files = fInfo, original = oWeb, bNonceList = bNL }) = cBrowser
-          aList = maybe [] (\wp -> autoList (wInstructions wp)) x
+          aList = maybe [] (autoList . wInstructions) x
           reqList = map ruleFromInstruction aList
 
 userInputReceived cBrowser Forward =
