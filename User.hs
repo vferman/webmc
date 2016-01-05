@@ -14,8 +14,7 @@ module User
 )where
 
 import           Data.Char
-import qualified Data.Map    as Map
-import           Debug.Trace
+import qualified Data.Map  as Map
 import           Types
 
 
@@ -30,7 +29,7 @@ actions:: User -> Display -> [String]
 actions cUser display
     | bVal && fVal= otherActions ++ urlInput ++
                       ["U -> B: back","U -> B: forward"]
-    | bVal = otherActions ++ urlInput ++ ["U -> B: back"] 
+    | bVal = otherActions ++ urlInput ++ ["U -> B: back"]
     | fVal = otherActions ++ urlInput ++ ["U -> B: forward"]
     | otherwise = otherActions ++ urlInput
     where (Display { lock = _, location = _, visibleLinks = visible,
