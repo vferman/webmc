@@ -12,7 +12,8 @@ import           Server
 import           Types
 
 rpServer :: String -> Server
-rpServer sName = initEmptyServer sName [] kData [] ruleMap
+rpServer sName =
+    initEmptyServer sName [] ("", []) [] [] [] kData ruleMap
     where url1 = Url sName "one"
           url2 = Url sName "two"
           url3 = Url sName "three"
@@ -52,7 +53,8 @@ rpServer sName = initEmptyServer sName [] kData [] ruleMap
 
 
 idpServer :: String -> Server
-idpServer sName = initEmptyServer sName  [] kData []  ruleMap
+idpServer sName =
+    initEmptyServer sName [] ("", []) [] [] [] kData ruleMap
     where url1 = Url sName "one"
           url2 = Url sName "two"
           kData = Map.fromList [("id", ["userid"]), ("user", ["uname"]),
@@ -80,7 +82,7 @@ idpServer sName = initEmptyServer sName  [] kData []  ruleMap
                       [(url1, [ (["id", "return", "idp"], [], response1)]),
                       (url2, [(["user", "pass", "return"], [], response2)])]
 
-getServers :: ([Server], Request)
+getServers :: ([Server], [Either Request Response])
 getServers = ([idpS, rpS, rp2S], req)
     where idpS= idpServer "idp"
           rpS = rpServer "rp"
@@ -89,4 +91,4 @@ getServers = ([idpS, rpS, rp2S], req)
           idpUrl = Url "idp" "one"
           knowledge = Map.fromList [("authAssert", "Sig idp "++ show idpUrl ++
                         " "++ show pKey)]
-          req = Request "" (Url "rp2" "three") "" Post knowledge
+          req = [Left (Request "attacker" (Url "rp2" "three") "" Post knowledge)]
