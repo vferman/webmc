@@ -69,3 +69,10 @@ optionToEvent option iUser
     | act == "forward" = Just Forward
     | otherwise = Nothing
     where (act:params)=words $ drop 8 option
+
+getUserActions :: User -> Display -> [String]
+getUserActions = actions
+
+initUser :: String -> Known ->UserKnowledge -> [Url] -> User
+initUser uID gKnown userData kUrls = User { userIdentifier = uID,
+  generalKnowledge = gKnown, domainKnowledge = userData , knownUrls = kUrls }
