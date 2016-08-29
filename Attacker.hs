@@ -14,10 +14,11 @@ import qualified Data.List  as List
 import qualified Data.Map   as Map
 import           Data.Maybe
 import           Types
+--import Debug.Trace
 
 
 initAttacker :: String -> Bool -> [String] -> [String] -> [Server] ->
-  [String] -> Map.Map Url WebFile -> Known -> Attacker
+  [String] -> Map.Map (Either String Url) WebFile -> Known -> Attacker
 initAttacker aID sstart fcSID scSID sList autoGen aFiles aKnown =
     Attacker { attackerIdentifier = aID, asSessions = sstart,
       fCorruptIDs = fcSID, sCorruptIDs = scSID, expectedByServer = sEMsgs,
@@ -33,14 +34,14 @@ initAttacker aID sstart fcSID scSID sList autoGen aFiles aKnown =
 expectedFromServer :: Server -> Map.Map Url [[String]]
 expectedFromServer cServer = result
     where rules = serverRules cServer
-          result = Map.map (map (\(a,_,_)-> a)) rules
+          result = Map.map (map (\(a,_,_,_)-> a)) rules
 
 
 getInfoFromServer :: Attacker -> Server -> Attacker
 getInfoFromServer cAttacker servr
     | serverIdentifier servr `elem` fcSID =
           cAttacker {acquiredKeys = kList,
-           acquiredInfo = Map.union browserInfo aInfo }
+           acquiredInfo = nInfo }
     | otherwise = cAttacker
     where (Attacker { fCorruptIDs = fcSID, acquiredKeys = aKeys,
             acquiredInfo = aInfo }) = cAttacker
@@ -50,18 +51,20 @@ getInfoFromServer cAttacker servr
             (\_ value accum -> Map.union
               (maybe Map.empty (`Map.singleton` value) (Map.lookup "dID" value))
               accum) Map.empty sessions
+          nInfo = Map.union browserInfo aInfo
 
 
 getInfoFromServerList :: Attacker -> [Server] -> Attacker
 getInfoFromServerList = foldl getInfoFromServer
 
 
-incompleteData :: [String] -> [String] -> [String] -> Known -> [String]
-incompleteData needed auto known info = results
-    where iKeys = Map.keys info
-          notInAuto = filter (`notElem` auto) needed
+incompleteData :: [String] -> [String] -> [String] -> [String] -> [String] ->
+  [String]
+incompleteData needed auto known afiles info = results
+    where notInAuto = filter (`notElem` auto) needed
           notInKnown = filter (`notElem` known) notInAuto
-          results = filter (`notElem` iKeys) notInKnown
+          notInFiles = filter (`notElem` afiles) notInKnown
+          results = filter (`notElem` info) notInFiles
 
 
 interceptedRequest :: Request -> Attacker -> Attacker
@@ -99,8 +102,10 @@ knowLedgeFromInstruction :: Domain -> [Instruction] -> Map.Map Domain Known
 knowLedgeFromInstruction _ [] = Map.empty
 knowLedgeFromInstruction domain ciList =
     foldl (\accum inst -> let (Instruction _ cRule) = inst
-                          in Map.union (Map.singleton domain (rContents cRule))
-                                          accum) Map.empty ciList
+                              content = rContents cRule
+                              vContent = Map.filter (/="?") content
+                          in Map.union (Map.singleton domain vContent) accum)
+      Map.empty ciList
 
 extractKnowledge :: Domain -> [Component] -> [Instruction] ->
   Map.Map Domain Known
@@ -133,27 +138,29 @@ reqToAction cReq =
 
 resToAction :: Attacker -> Response -> [String]
 resToAction cAttacker cRes =
-    ["Attacker Pass Response: " ++ server rOrigin ++ " -> "++ dID] ++
-      cInstructions ++ cCookies
+    ["Attacker Pass Response: " ++ server rOrigin ++ " -> "++ dID] ++ cCookies
+      ++ cInstructions
     where (Attacker {fCorruptIDs = corruptSID, sCorruptIDs = sCorruptSID,
             acquiredFiles = aFiles }) = cAttacker
           (Response { destinationIdentifier = dID, origin = rOrigin }) = cRes
-          cInstructions = ["Attacker add Instructions: " ++ server rOrigin ++ " -> " ++
-                             dID | server rOrigin `elem` corruptSID ||
-                                      server rOrigin `elem` sCorruptSID ]
-          cCookies = ["Attacker add Cookies: "++ show x ++ " to " ++ server rOrigin ++
-                        " -> " ++ dID |
+          cInstructions = ["Attacker Add Instructions: " ++ server rOrigin ++
+                            " -> " ++ dID | server rOrigin `elem` corruptSID ||
+                                     server rOrigin `elem` sCorruptSID ]
+          cCookies = ["Attacker Add Cookies: "++ show x ++ " to " ++
+                        server rOrigin ++ " -> " ++ dID |
                         x <- List.subsequences (Map.keys aFiles),
                         (server rOrigin `elem` corruptSID ||
-                          server rOrigin `elem`sCorruptSID) &&
-                          not (Map.null aFiles)]
+                          server rOrigin `elem` sCorruptSID) &&
+                          not (Map.null aFiles) && not (null x) ]
 
 fillableMsgs :: Attacker -> Url -> [[String]] -> [String]
-fillableMsgs cAttacker = fillableMsgs' aID known
+fillableMsgs cAttacker url= fillableMsgs' aID known url
     where (Attacker {attackerIdentifier = aID, generated = autoGen,
-            acquiredFiles = aFiles, attackerKnowledge = aKnown }) = cAttacker
+            acquiredFiles = aFiles, attackerKnowledge = aKnown,
+            acquiredInfo = aInfo}) = cAttacker
           cookies = concatMap (Map.keys . fContent) (Map.elems aFiles)
-          known = autoGen ++ cookies ++ Map.keys aKnown
+          acInfo = maybe [] Map.keys (Map.lookup (server url) aInfo)
+          known = autoGen ++ cookies ++ Map.keys aKnown ++ acInfo
 
 fillableMsgs' :: String -> [String] -> Url -> [[String]] -> [String]
 fillableMsgs' pID known dest paramLists =
@@ -174,7 +181,7 @@ sessionActions cAttacker
                     pMsgs
           poMsgs = Map.map (foldl (\accum v -> if null v
                                                   then accum
-                                                  else v:accum) [[]])  pMsgs
+                                                  else v:accum) [])  pMsgs
           oMsgs = Map.foldWithKey (\pID known a ->
                     Map.foldWithKey (\url req acc -> acc ++
                                       fillableMsgs' pID (Map.keys known) url
@@ -190,7 +197,7 @@ attackerActions cAttacker = result
           actAtt = if not sstart then [] else sessionActions cAttacker
           result = actReq ++ actRes ++ actAtt
 
-addCookies :: Attacker -> Response -> [String] -> Response
+addCookies :: Attacker -> Response -> [Either String Url] -> Response
 addCookies cAttacker cRes sUrls
     | cROrig `elem` cIDs =
         cRes { fileList = Map.unionWith
@@ -201,10 +208,9 @@ addCookies cAttacker cRes sUrls
                             nCookies cCookies }
     | otherwise = cRes
     where cIDs = fCorruptIDs cAttacker ++ sCorruptIDs cAttacker
-          cROrig= server (origin cRes)
-          urls = map read sUrls
+          cROrig = server (origin cRes)
           cookies = acquiredFiles cAttacker
-          nCookies = Map.filterWithKey (\k _ -> k `elem` urls) cookies
+          nCookies = Map.filterWithKey (\k _ -> k `elem` sUrls) cookies
           cCookies = fileList cRes
 
 
@@ -282,11 +288,14 @@ generateValues pID nonce fields = Map.fromList result
           result = zip fields values
 
 newRuleReq :: String -> Url -> [String] -> Known -> [String] -> [Int] ->
-  (Maybe Rule, Maybe Request)
-newRuleReq aID url params known auto aNL
+  Map.Map (Either String Url) WebFile ->  (Maybe Rule, Maybe Request)
+newRuleReq aID url params known auto aNL aFiles
     | all (`elem` Map.keys rPayload) params = (Just nRule, Just nReq)
     | otherwise = (Nothing, Nothing)
-    where pPayload = Map.filterWithKey (\k _ -> k `elem` params) known
+    where nUrl = url { path = "" }
+          fKnown = maybe Map.empty fContent (Map.lookup (Right nUrl) aFiles)
+          nKnown = Map.union fKnown known
+          pPayload = Map.filterWithKey (\k _ -> k `elem` params) nKnown
           missing = filter (\f -> f `notElem` Map.keys pPayload &&
                                     f `elem` auto) params
           rPayload = if null missing
@@ -294,7 +303,7 @@ newRuleReq aID url params known auto aNL
                         else Map.union pPayload
                                (generateValues aID (head aNL) missing)
           nRule = Rule (RuleType Normal Full) Post (Left url) rPayload
-          nReq = ruleToRequest nRule aID ("nonce" ++ aID ++ show(head aNL))
+          nReq = ruleToRequest nRule aID aFiles ("nonce" ++ aID ++ show(head aNL))
 
 reqWithData :: Attacker -> [String] -> Url -> String ->
   (Attacker, Maybe Request)
@@ -310,6 +319,7 @@ reqWithData cAttacker params url pID
     where rules = expectedByServer cAttacker
           aNL = aNonceList cAttacker
           autoGen = generated cAttacker
+          aFiles = acquiredFiles cAttacker
           toReq = Map.filterWithKey (\k v -> k == url && params `elem` v ) rules
           aID = attackerIdentifier cAttacker
           rInfo = if pID == aID
@@ -319,6 +329,7 @@ reqWithData cAttacker params url pID
           (rule, nReq) = if Map.null toReq
                             then (Nothing, Nothing)
                             else newRuleReq aID url params rInfo autoGen aNL
+                                   aFiles
 
 
 attackerOptionToEvent :: Attacker -> String ->
@@ -329,7 +340,7 @@ attackerOptionToEvent cAttacker option
     | val1 == "Pass" && val2 == "Response:" && not (null resQ) =
         (cAttacker {responseQueue = tail resQ } , Nothing, Just (head resQ))
     | val1 == "Add" && val2 == "Cookies:" && not (null resQ) =
-        let cUrls =read $ unwords (takeWhile (/="to") params)
+        let cUrls = (read $ unwords (takeWhile (/="to") params))::[Either String Url]
             nRes = addCookies cAttacker (head resQ) cUrls
         in (cAttacker {responseQueue = nRes:tail resQ } , Nothing, Nothing )
     | val1 == "Add" && val2 == "Instructions:"  && not (null resQ) =
@@ -352,9 +363,9 @@ neededInfo :: Attacker -> [Request] -> [Request]
 neededInfo attackr aGoal =
     List.nub . map fst . filter (\(_, s) -> null s ) $ results
     where (Attacker { generated = autoGen, acquiredInfo = info,
-            attackerKnowledge = aKnown })= attackr
+            attackerKnowledge = aKnown, acquiredFiles = aFiles})= attackr
           aKFields = Map.keys aKnown
-          iList = Map.elems info
-          iData = map (\req -> (req, incompleteData (Map.keys (payload req))
-            autoGen aKFields)) aGoal
-          results = concatMap (\k -> map (\(r, f)-> (r, f k)) iData) iList
+          aKFiles = Map.keys . Map.unions $ map fContent (Map.elems aFiles)
+          iList = Map.keys . Map.unions $ Map.elems info
+          results = map (\req -> (req, incompleteData (Map.keys (payload req))
+            autoGen aKFields aKFiles iList)) aGoal
