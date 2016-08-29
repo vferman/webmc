@@ -1,35 +1,39 @@
 import           Browser
 import           Data.Char
 import qualified Data.Map    as Map
-import           Data.Maybe
---import           OIDServer
+import Data.Maybe
 import           Attacker
-import           Debug.Trace
-import           Planner
-import           SamlServer
+--import           Debug.Trace
+import WebKereberos
 import           Server
 import           Types
 import           User
 
-printActions:: User -> Browser -> [Server] -> IO ()
-printActions _ _ [] = putStrLn "Error"
-printActions cUser cBrowser sList = do
+printActions:: Attacker -> User -> Browser -> [Server] -> IO ()
+printActions _ _ _ [] = putStrLn "Error"
+printActions cAttacker cUser cBrowser sList = do
     putStrLn "The following are the available actions:"
     putStr toPrint
-    where userActions = getUserActions cUser (generateDisplay cBrowser)
+    where attActions = attackerActions cAttacker
+          userActions = getUserActions cUser (generateDisplay cBrowser)
           bActions = getBrowserActions cBrowser
           sActions = foldl (\accum cServer -> accum ++ getServerActions cServer) [] sList
-          resultingActions = userActions ++ bActions ++ sActions
-          tempActions = zipWith (\n action -> show n ++ " - " ++ action) [1..] resultingActions
-          serverTitle = "Server Actions:":drop (length userActions +
-                          length bActions) tempActions
+          resultingActions = attActions ++ userActions ++ bActions ++ sActions
+          tempActions = zipWith (\n action -> show n ++ " - " ++ action)
+                          ([1..]::[Integer]) resultingActions
+          attTitle = "Attacker Actions:":take (length attActions) tempActions
+          userTitle = "User Actions:": take (length userActions)
+                        (drop (length attActions) tempActions)
           browserTitle = "Browser Actions:": take (length bActions)
-                           (drop (length userActions) tempActions)
-          userTitle = "User Actions:": take (length userActions) tempActions
+                           (drop (length attActions + length userActions)
+                             tempActions)
+          serverTitle = "Server Actions:":drop (length attActions +
+                          length userActions + length bActions) tempActions
+
           defaultActions = ["Syustem Actions:",
             "R - Return to a previous State", "S - Print system status"]
-          toPrint = unlines $ defaultActions ++ userTitle ++ browserTitle ++
-            serverTitle
+          toPrint = unlines $ defaultActions ++ attTitle ++ userTitle ++
+                                browserTitle ++ serverTitle
 
 printStatus:: Browser -> [Server] -> IO ()
 printStatus cBrowser sList = do
@@ -47,19 +51,21 @@ reqToServer req cServer
     where rDest = server (destination req)
           sName = serverIdentifier cServer
 
-resSent :: Response -> [Server] -> Browser -> ([Server], Browser)
-resSent res [] cBrowser
-    | rDest == bName = ([], responseReceived cBrowser res)
-    | otherwise = ([], cBrowser)
+resSent :: Response -> [Server] -> Browser -> Attacker ->
+  ([Server], Browser, Attacker)
+resSent res [] cBrowser attackr
+    | rDest == bName = ([], responseReceived cBrowser res, attackr)
+    | rDest == "attacker" = ([], cBrowser, aResponseReceived res attackr)
+    | otherwise = ([], cBrowser, attackr)
     where rDest = destinationIdentifier res
           bName = browserIdentifier cBrowser
-resSent res (x:xs) cBrowser
+resSent res (x:xs) cBrowser attackr
     | rDest == sName =
         let nServer = sResponseReceived x res
-        in (nServer:xs, cBrowser)
+        in (nServer:xs, cBrowser, attackr)
     | otherwise =
-        let (nSList, nBrowser) = resSent res xs cBrowser
-        in (x:nSList, nBrowser)
+        let (nSList, nBrowser, nAttackr) = resSent res xs cBrowser attackr
+        in (x:nSList, nBrowser, nAttackr)
     where rDest = destinationIdentifier res
           sName = serverIdentifier x
 
@@ -78,61 +84,84 @@ serverListToEvent (x:xs) option
 
 executeOption :: User -> Browser -> [Server] -> Attacker -> Int -> IO ()
 executeOption cUser cBrowser sList cAttacker option
-    | option <= lUActions  = do
+    | option <= lAActions = do
+        putStrLn (show option ++ "performing Attacker action")
+        putStrLn $ attActions !! (option - 1)
+        let (pAttacker, nReq, nRes) = attackerOptionToEvent cAttacker
+                                        (attActions !! (option - 1))
+            (tSList, nBrowser, tAttacker) = maybe (sList, cBrowser, pAttacker)
+                                              (\r -> resSent r sList cBrowser pAttacker)
+                                                nRes
+            nSList
+                | isJust nReq = map (reqToServer (fromJust nReq)) tSList
+                | otherwise = tSList
+            nAttacker = getInfoFromServerList tAttacker nSList
+        loop cUser nBrowser nSList nAttacker
+    | (option - lAActions ) <= lUActions  = do
         putStrLn (show option ++ " performing user action")
-        putStrLn $ uActions !! (option - 1)
-        let uInput = optionToEvent (uActions !! (option - 1)) cUser
+        putStrLn $ uActions !! (option - lAActions - 1)
+        let uInput = optionToEvent (uActions !! (option - lAActions - 1)) cUser
             nBrowser = maybe cBrowser (userInputReceived cBrowser) uInput
         loop cUser nBrowser sList cAttacker
-    | (option - lUActions) <= lBActions = do
+    | (option - lAActions - lUActions) <= lBActions = do
         putStrLn (show option ++ " performing browser action")
-        let bOption = option - lUActions - 1
+        let bOption = option - lAActions - lUActions - 1
             (tempBrowser, req) = browserOptionToEvent cBrowser
                                 (bActions !! bOption)
             nBrowser = maybe cBrowser (requestSent tempBrowser) req
-            nSList = maybe sList (\reqValue -> map (reqToServer reqValue) sList)
-                       req
-            nAttacker = getInfoFromServerList cAttacker nSList
-            nAInfo = neededInfo nAttacker
-            aSuccess = foldl (\accum attack -> if length attack <= 1
-                                                   then "Attack successful"
-                                                   else accum) "" nAInfo
+            --nSList = maybe sList (\reqValue -> map (reqToServer reqValue) sList)
+            --           req
+            tAttacker = maybe cAttacker (`interceptedRequest` cAttacker) req
+            nAttacker = getInfoFromServerList tAttacker sList
+            --nAInfo = neededInfo nAttacker
+            --aSuccess = foldl (\accum attack -> if length attack <= 1
+            --                                       then "Attack successful"
+            --                                       else accum) "" nAInfo
         putStrLn $ bActions !! bOption
         putStrLn ""
-        mapM_ print nAInfo
-        putStrLn aSuccess
+        print (files nBrowser)
+        print req
+        --mapM_ print nAInfo
+        --putStrLn aSuccess
         putStrLn ""
-        loop cUser nBrowser nSList nAttacker
-    | (option - lUActions - lBActions) <= lSActions = do
+        loop cUser nBrowser sList nAttacker
+    | (option -lAActions - lUActions - lBActions) <= lSActions = do
         putStrLn (show option ++ " performing server action")
-        let sOption = option - lUActions - lBActions -1
-            (tempSList, req, res) = serverListToEvent sList sOption
-            reqSList = maybe tempSList (\reqVal ->
-                         map (reqToServer reqVal) tempSList) req
-            (nSList, nBrowser) = maybe (reqSList, cBrowser)
-                                   (\rVal -> resSent rVal reqSList cBrowser) res
-            nAttacker = getInfoFromServerList cAttacker nSList
-            nAInfo = neededInfo nAttacker
-            aSuccess = foldl (\accum attack -> if length attack <= 1
-                                                  then "Attack successful"
-                                                  else accum) "" nAInfo
+        let sOption = option - lAActions - lUActions - lBActions -1
+            (nSList, req, res) = serverListToEvent sList sOption
+            -- reqSList = maybe tempSList (\reqVal ->
+            --              map (reqToServer reqVal) tempSList) req
+            -- (nSList, nBrowser, tAttacker) = maybe
+            --                                   (reqSList, cBrowser, cAttacker)
+            --                                   (\rVal -> resSent rVal reqSList
+            --                                               cBrowser cAttacker)
+            --                                   res
+            rqAttacker = maybe cAttacker (`interceptedRequest` cAttacker) req
+            tAttacker = maybe rqAttacker (`interceptedResponse` cAttacker) res
+            nAttacker = getInfoFromServerList tAttacker sList
+            --nAInfo = neededInfo nAttacker
+            --aSuccess = foldl (\accum attack -> if length attack <= 1
+            --                                      then "Attack successful"
+            --                                      else accum) "" nAInfo
         putStrLn $ sActions !! sOption
         putStrLn ""
-        mapM_ print nAInfo
-        putStrLn aSuccess
+        --mapM_ print nAInfo
+        --putStrLn aSuccess
         putStrLn ""
-        loop cUser nBrowser nSList nAttacker
+        loop cUser cBrowser nSList nAttacker
     | otherwise = putStrLn "Error Please input a valid option, number too large"
-    where uActions = getUserActions cUser (generateDisplay cBrowser)
+    where attActions = attackerActions cAttacker
+          uActions = getUserActions cUser (generateDisplay cBrowser)
           bActions = getBrowserActions cBrowser
           sActions = foldl (\accum cServer -> accum ++ getServerActions cServer) [] sList
+          lAActions = length attActions
           lUActions = length uActions
           lBActions = length bActions
           lSActions = length sActions
 
 loop:: User -> Browser -> [Server] -> Attacker-> IO ()
 loop cUser cBrowser sList cAttacker= do
-    printActions cUser cBrowser sList
+    printActions cAttacker cUser cBrowser sList
     putStrLn "What would you like to do?"
     option <- getLine
     if not (null option)
@@ -160,14 +189,12 @@ main = do
     loop myUser myBrowser myServers myAttacker
     putStrLn ""
     putStrLn "Bye!"
-    where url1 = Url { server = "rp", path = "one" }
-          url2 = Url { server = "idp", path = "one" }
-          kUrls = [url1,url2]
-          gKnown = Map.singleton "idp" (show url2)
-          uKnown = Map.fromList [("id", "userid"), ("user", "uname"),
-                     ("pass", "pass")]
-          uDKnown = Map.fromList [("rp", uKnown), ("idp", uKnown)]
+    where url1 = Url { server = "was", path = "one" }
+          url2 = Url { server = "att", path =""}
+          kUrls = [url1, url2]
+          gKnown = Map.empty
+          uKnown = Map.fromList [("user", "uname"), ("pass", "pass")]
+          uDKnown = Map.singleton "kdc" uKnown
           myUser = initUser "user" gKnown uDKnown kUrls
           myBrowser = initEmptyBrowser "browser"
-          (myServers, aGoal) = getServers
-          myAttacker = initAttacker "attacker" ["rp"] aGoal [] Map.empty
+          (myServers, _, myAttacker) = getServers

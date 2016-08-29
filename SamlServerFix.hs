@@ -9,6 +9,7 @@ module SamlServerFix where
 
 import qualified Data.Map as Map
 import           Server
+import           Attacker
 import           Types
 
 rpServer :: String -> Server
@@ -47,9 +48,9 @@ rpServer sName =
                         componentList = [component3],
                         instructionList = PageInstructions { autoList = [],
                           conditionalList = [] }, fileList = Map.empty }
-          ruleMap = Map.fromList [(url1, [([], [], response1)]),
-                      (url2, [(["id", "idp"], [], response2)]),
-                      (url3, [(["id", "idp", "authAssert"], [], response3)])]
+          ruleMap = Map.fromList [(url1, [([], [], response1, Nothing)]),
+                      (url2, [(["id", "idp"], [], response2, Nothing)]),
+                      (url3, [(["id", "idp", "authAssert"], [], response3, Nothing)])]
 
 
 idpServer :: String -> Server
@@ -80,12 +81,12 @@ idpServer sName =
                           conditionalList = [] }, fileList = Map.empty}
           ruleMap = Map.fromList
                       [(url1, [ (["id", "rp", "return", "idp"], [],
-                        response1)]),
+                        response1, Nothing)]),
                       (url2, [(["user", "pass", "id", "rp", "return", "idp"],
-                        [], response2)])]
+                        [], response2, Nothing)])]
 
-getServers :: ([Server], [Either Request Response])
-getServers = ([idpS, rpS, rp2S], req)
+getServers :: ([Server], [Either Request Response], Attacker)
+getServers = ([idpS, rpS, rp2S], req, myAttacker)
     where idpS= idpServer "idp"
           rpS = rpServer "rp"
           rp2S = rpServer "rp2"
@@ -94,3 +95,6 @@ getServers = ([idpS, rpS, rp2S], req)
           knowledge = Map.fromList [("rp", "rp2"),
             ("authAssert", "Sig rp rp2 idp "++ show idpUrl ++ " "++ show pKey)]
           req = [Left (Request "attacker" (Url "rp2" "three") "" Post knowledge)]
+          aKnown = Map.fromList [("rp", "rp2")]
+          myAttacker = initAttacker "attacker" False ["rp"] []
+                        [idpS, rpS, rp2S] [] Map.empty aKnown
