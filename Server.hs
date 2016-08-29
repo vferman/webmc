@@ -12,7 +12,8 @@ module Server where
 import           Data.List
 import qualified Data.Map   as Map
 import           Data.Maybe
---import           Debug.Trace
+import Data.Either
+import           Debug.Trace
 import           Encryption
 import           Types
 
@@ -30,7 +31,8 @@ getServerActions = serverActions
 initServer :: String -> [String] -> (String, [String]) -> [String] ->
   [String] -> [Key] -> Map.Map String [String] -> Map.Map Domain Known ->
   Map.Map Nonce Known -> Map.Map (String, String) Known ->
-  Map.Map String [String] -> Map.Map Url [([String], [ServerRule], Response)] ->
+  Map.Map String [String] ->
+  Map.Map Url [([String], [ServerRule], Response, Maybe Response)] ->
   Map.Map Nonce [ServerRule] -> Map.Map Nonce (Nonce, Request) ->
   Map.Map Nonce Response -> [Int] -> Server
 initServer sID  auto pData kDesc track keys known serverData sessionData pSession seenL rules pReq eRes pRes nonceL =
@@ -45,7 +47,7 @@ initServer sID  auto pData kDesc track keys known serverData sessionData pSessio
 --Server with an empty initial state (besides its rules and known data)
 initEmptyServer :: String -> [String] -> (String, [String]) -> [String] ->
   [String] -> [Key] ->  Map.Map String [String] ->
-  Map.Map Url [([String], [ServerRule], Response)] -> Server
+  Map.Map Url [([String], [ServerRule], Response, Maybe Response)] -> Server
 initEmptyServer sID auto pData kDesc track keys known rules =
     initServer sID auto pData kDesc track keys known Map.empty Map.empty
       Map.empty Map.empty rules Map.empty Map.empty Map.empty [1..]
@@ -71,12 +73,16 @@ compliesWithSRule:: Known -> [String] -> Bool
 compliesWithSRule _ []= True
 compliesWithSRule knowledge requirements = all (`Map.member` knowledge) requirements
 
-getRule:: Known -> [([String], [ServerRule], Response)] -> Maybe ([ServerRule],Response)
-getRule _ [] = Nothing
-getRule knowledge (x:xs)
-    | compliesWithSRule knowledge requirements = Just (sReqRules, response)
-    | otherwise = getRule knowledge xs
-    where (requirements, sReqRules, response) = x
+getRule:: Bool -> Known -> [([String], [ServerRule], Response, Maybe Response)]
+  -> Maybe ([ServerRule], Maybe Response)
+getRule _ _ [] = Nothing
+getRule valid knowledge (x:xs)
+    | compliesWithSRule knowledge requirements =
+        if valid
+            then Just (sReqRules, Just response)
+            else Just ([], errRes)
+    | otherwise = getRule valid knowledge xs
+    where (requirements, sReqRules, response, errRes) = x
 
 mapFromSigValue'::[String] -> [(String, String)] -> [(String, String)]
 mapFromSigValue' [] accum = accum
@@ -157,13 +163,11 @@ requestReceived cServer request =
             reqNonce = rNonce, payload = reqInfo }) = request
           validUrl = Map.lookup dUrl sRules
           validRequest = checkInfo reqInfo kData keys
-          validRule = if validRequest
-                          then maybe Nothing (getRule reqInfo) validUrl
-                          else Nothing
+          validRule = getRule validRequest reqInfo (fromMaybe [] validUrl)
           requestExtraInfo = Map.fromList [("dID", bID), ("dUrl", show dUrl)]
           sessionInfo = Map.union requestExtraInfo reqInfo
-          (ruleRequests, ruleResponse) = fromMaybe ([], errorResponse bID dUrl
-            rNonce) validRule
+          (ruleRequests, mRuleRes) = fromMaybe ([], Nothing) validRule
+          ruleResponse = fromMaybe (errorResponse bID dUrl rNonce) mRuleRes
           npSession = appendSession (Just sessionInfo) pData pSession
           nSeen = appendSeen (Just sessionInfo) track cSeen
           nKeys = appendKeys (Just sessionInfo) kDesc keys
@@ -178,6 +182,13 @@ getKnownElems Nothing _ = Map.empty
 getKnownElems (Just known) list = result
     where result = Map.filterWithKey (\k _ -> k `elem` list) known
 
+getGKnownElems :: Map.Map String [String] -> [String] -> Known
+getGKnownElems _ [] = Map.empty
+getGKnownElems kData list = result
+    where result = Map.mapMaybeWithKey (\k v -> if k `elem` list
+                                                   then Just (head v)
+                                                   else Nothing) kData
+
 genAutoElem :: Nonce -> [String] -> [String] -> Known
 genAutoElem _ [] _ = Map.empty
 genAutoElem _ _ [] = Map.empty
@@ -186,10 +197,11 @@ genAutoElem nonce auto list = Map.fromList result
           result = map (\y -> (y, y++ nonce)) elems
 
 
-requestFromRule :: String -> Int -> Map.Map Domain Known -> Maybe Known->
-  [String] -> Maybe ServerRule -> Maybe Request
-requestFromRule _ _ _ _ _ Nothing = Nothing
-requestFromRule sID nonce know kInfo auto rule
+requestFromRule :: String -> Map.Map String [String]-> Int ->
+  Map.Map Domain Known -> Maybe Known-> [String] -> Maybe ServerRule ->
+  Maybe Request
+requestFromRule _ _ _ _ _ _ Nothing = Nothing
+requestFromRule sID kData nonce know kInfo auto rule
     | isJust reqUrl && all (`elem` Map.keys rPayload) frContent =
         Just Request { originIdentifier = sID, destination = fromJust reqUrl,
           reqNonce = newNonce, method = ruleMethod, payload =rPayload }
@@ -203,7 +215,8 @@ requestFromRule sID nonce know kInfo auto rule
           contentKnown = getKnownElems (Map.lookup (maybeUrlDomain reqUrl) know) cContent
           contentInfo = getKnownElems kInfo cContent
           autoInfo = genAutoElem newNonce auto cContent
-          pPayload = Map.unions [autoInfo, contentKnown, contentInfo]
+          gKInfo = getGKnownElems kData cContent
+          pPayload = Map.unions [gKInfo, autoInfo, contentKnown, contentInfo]
           hContent = filter (isInfixOf " = hash") ruleContent
           hPayload = foldl (\acc hval -> let (a,b) = break (=='=') hval
                                              k = dropWhileEnd (==' ') a
@@ -224,7 +237,7 @@ sendRequest cServer nonce
           serverSession = sSession, persistentSession = pSession, seen = cSeen,
           serverRules = sRules,
           pendingSRequests = Map.insert nonce (tail (fromJust ruleList)) sPReq,
-          expectedResponses= Map.insert (sID ++ show (head sNL))
+          expectedResponses= Map.insert ("nonce" ++ sID ++ show (head sNL))
             (nonce, fromJust generatedRequest) eSResp,
           pendingSResponses = spRes, sNonceList= tail sNL }, generatedRequest)
     | otherwise =
@@ -246,7 +259,7 @@ sendRequest cServer nonce
           ruleList = Map.lookup nonce sPReq
           rule = maybe Nothing getRequestRule ruleList
           reqKnowledge = Map.lookup nonce sSession
-          generatedRequest = requestFromRule sID (head sNL) sKnown
+          generatedRequest = requestFromRule sID kData (head sNL) sKnown
             reqKnowledge auto rule
           bID =  fromMaybe Map.empty reqKnowledge Map.! "dID"
           dUrl = read (fromMaybe Map.empty reqKnowledge Map.! "dUrl")
@@ -269,10 +282,10 @@ maybeUrlDomain :: Maybe Url -> Domain
 maybeUrlDomain Nothing = ""
 maybeUrlDomain (Just url) = server url
 
-filesToShared:: Map.Map Url WebFile -> Map.Map Domain Known
+filesToShared:: Map.Map (Either String Url) WebFile -> Map.Map Domain Known
 filesToShared recFiles
     | recFiles /= Map.empty =
-        Map.mapKeys server $ Map.map fileContents recFiles
+        Map.mapKeys (either (const "") server) $ Map.map fileContents recFiles
     | otherwise = Map.empty
 
 instructionToRule:: Instruction -> (Known, Maybe ServerRule)
@@ -336,32 +349,54 @@ getValue:: Known -> Known -> [String] -> Nonce -> String -> String
 getValue known shared auto nonce identifier
     | Map.member identifier known = fromMaybe "" $ Map.lookup identifier known
     | Map.member identifier shared = fromMaybe "" $ Map.lookup identifier shared
-    | identifier `elem` auto = nonce++identifier
+    | identifier `elem` auto = identifier++nonce
     | otherwise = ""
 
-fillEnc:: Known -> Maybe Known -> [String] -> Nonce -> String -> String
-fillEnc known mShared auto nonce toEnc= show $ encrypt (unwords res) (read key)
+fillEnc:: [Key] -> Known -> Maybe Known -> [String] -> Nonce -> String -> String
+fillEnc keys known mShared auto nonce toEnc
+    | key `elem` keys = show $ encrypt (unwords res) key
+    | otherwise = ""
     where content = words toEnc
           incomplete = take (length content - 3) (drop 1 content)
           shared = fromMaybe Map.empty mShared
           res = map (\a -> a ++ " " ++ getValue known shared auto nonce a)
                   incomplete
-          key = unwords $ drop (length content - 2) content
+          key = read . unwords $ drop (length content - 2) content
 
-fillData:: Known -> Maybe Known -> [String] -> Nonce -> Known -> [Known]
-fillData known sKnown auto nonce contents = [sigData, encData, kData, sharedData, genData, contents]
+fillKey:: Known -> String -> String
+fillKey known params
+    | length (words params) > 3 = ""
+    | t2 == "Pub" = t2 ++ " " ++ t3
+    | t2 == "Pri" && t3 /= pID = ""
+    | t2 == "Pri" && t3 == pID = t2 ++ " " ++ t3
+    | t2 == "Shr" && pID /= "" && dID /= "" = "Shr " ++ pID ++ " " ++ dID
+    | otherwise = ""
+    where (_:t2:t3:_) = words params
+          dUrl = Map.lookup "dUrl" known
+          tdID = Map.lookup "dID" known
+          dID = fromMaybe "" tdID
+          pID = maybe "" (server. read) dUrl
+
+fillData:: [Key] -> Known -> Maybe Known -> [String] ->
+  Map.Map String [String] -> Nonce -> Known -> [Known]
+fillData keys known sKnown auto kData nonce contents =
+    [gKData, keyData, sigData, encData, pkData, sharedData, genData, contents]
     where incompleteData = Map.keys $ Map.filter (=="") contents
+          pKeys = Map.filter (isPrefixOf "Key") contents
+          keyData = Map.map (fillKey known) pKeys
+          nKeys = nub (keys ++ map read (Map.elems keyData))
           sigRequired = Map.filter (isPrefixOf "Sig") contents
           encRequired = Map.filter (isPrefixOf "Enc") contents
-          sigData = Map.map (fillEnc known sKnown auto nonce) sigRequired
-          encData = Map.map (fillEnc known sKnown auto nonce) encRequired
-          kData = getKnownElems (Just known) incompleteData
+          sigData = Map.map (fillEnc nKeys known sKnown auto nonce) sigRequired
+          encData = Map.map (fillEnc nKeys known sKnown auto nonce) encRequired
+          pkData = getKnownElems (Just known) incompleteData
           sharedData = getKnownElems sKnown incompleteData
           genData = genAutoElem nonce auto incompleteData
+          gKData = getGKnownElems kData incompleteData
 
-fillInstruction :: Map.Map Domain Known -> Known -> [String] -> Nonce ->
-  Instruction -> Maybe Instruction
-fillInstruction shared known auto nonce inst
+fillInstruction :: [Key] -> Map.Map Domain Known -> Known -> [String] ->
+  Map.Map String [String] -> Nonce -> Instruction -> Maybe Instruction
+fillInstruction keys shared known auto kData nonce inst
     | Map.null (Map.filter (=="") resultingData) && isJust nUrl =
         Just (Instruction trigger Rule { rType =instTYpe, rMethod =instRMethod,
                rUrl = Left (fromJust nUrl), rContents = resultingData })
@@ -372,61 +407,83 @@ fillInstruction shared known auto nonce inst
                                  then Just emptyUrl
                                  else fmap read (Map.lookup b known)) instUrl
           sKnown = maybe Nothing (\a -> Map.lookup (server a) shared) nUrl
-          resultingData = Map.unions (fillData known sKnown auto nonce iContent)
+          resultingData = Map.unions (fillData keys known sKnown auto kData
+                            nonce iContent)
 
-fillComponent :: Map.Map Domain Known -> Known -> [String] -> Nonce ->
-  Component -> Maybe Component
-fillComponent shared known auto nonce component
+fillComponent :: [Key] ->Map.Map Domain Known -> Known -> [String] ->
+  Map.Map String [String] -> Nonce -> Component -> Maybe Component
+fillComponent keys shared known auto kData nonce component
     | Nothing `notElem` resInsts = Just Component { cOrigin = cUrl,
         cList = catMaybes resInsts, cPos = pos, cVisible = visible }
     | otherwise = Nothing
     where (Component { cOrigin = cUrl, cList = instList, cPos = pos,
             cVisible = visible }) = component
-          resInsts= map (fillInstruction shared known auto nonce) instList
+          resInsts= map (fillInstruction keys shared known auto kData nonce)
+                      instList
 
-fillComponents :: [Component] -> Map.Map Domain Known -> Known -> [String] ->
-  Nonce -> Maybe [Component]
-fillComponents [] _ _ _ _ = Just []
-fillComponents components shared known auto nonce
+fillComponents :: [Key] -> [Component] -> Map.Map Domain Known -> Known ->
+  [String] -> Map.Map String [String] -> Nonce -> Maybe [Component]
+fillComponents _ [] _ _ _ _ _ = Just []
+fillComponents keys components shared known auto kData nonce
     | Nothing `notElem` result = Just $ catMaybes result
     | otherwise = Nothing
-    where result= map (fillComponent shared known auto nonce) components
+    where result = map (fillComponent keys shared known auto kData nonce)
+                     components
 
-fillInstructions :: PageInstructions -> Map.Map Domain Known -> Known ->
-  [String] -> Nonce -> Maybe PageInstructions
-fillInstructions instructions shared known auto nonce
+fillInstructions :: [Key] -> PageInstructions -> Map.Map Domain Known ->
+  Known -> [String] -> Map.Map String [String] -> Nonce ->
+  Maybe PageInstructions
+fillInstructions keys instructions shared known auto kData nonce
     | Nothing `notElem` newAuto && Nothing `notElem` newCond =
         Just PageInstructions { autoList= catMaybes newAuto,
                 conditionalList = catMaybes newCond }
     | otherwise = Nothing
     where (PageInstructions { autoList= autoInst,
             conditionalList = condInst })=instructions
-          newAuto = map (fillInstruction shared known auto nonce) autoInst
-          newCond = map (fillInstruction shared known auto nonce) condInst
+          newAuto = map (fillInstruction keys shared known auto kData nonce)
+                      autoInst
+          newCond = map (fillInstruction keys shared known auto kData nonce)
+                      condInst
 
-fillFile:: Map.Map Domain Known -> Known -> [String] -> Nonce -> Url ->
-  WebFile -> Maybe WebFile
-fillFile shared known auto nonce url file
+fillFile:: [Key] -> Map.Map Domain Known -> Known -> [String] ->
+  Map.Map String [String] -> Nonce -> Either String Url -> WebFile ->
+  Maybe WebFile
+fillFile _ _ _ _ _ _ (Left _) _  = Nothing
+fillFile keys shared known auto kData nonce (Right url) file
+    | url == emptyUrl = Nothing
     | Map.null (Map.filter (=="") resultingData) =
         Just WebFile { fTtl =ttl, fContent = resultingData }
     | otherwise = Nothing
     where (WebFile { fTtl =ttl, fContent = fData }) = file
           sKnown = Map.lookup (server url) shared
-          resultingData = Map.unions (fillData known sKnown auto nonce fData)
+          resultingData = Map.unions (fillData keys known sKnown auto kData
+                            nonce fData)
 
-fillFiles:: Map.Map Url WebFile -> Map.Map Domain Known -> Known -> [String] ->
-  Nonce -> Maybe (Map.Map Url WebFile)
-fillFiles fList shared known auto nonce
+fillFiles:: [Key] -> Map.Map (Either String Url) WebFile ->
+  Map.Map Domain Known -> Known -> [String] -> Map.Map String [String] ->
+  Nonce -> Maybe (Map.Map (Either String Url) WebFile)
+fillFiles keys fList shared known auto kData nonce
     | Map.null fList = Just Map.empty
-    | all (`elem` Map.keys results) (Map.keys fList)  = Just results
+    | length (Map.keys results) == length (Map.keys fList) = Just results
     | otherwise = Nothing
-    where results = Map.mapMaybeWithKey (fillFile shared known auto nonce) fList
+    where nFList = Map.mapKeys (\k -> if isRight k
+                                        then k
+                                        else
+                                            let (Left b) = k
+                                                v = Map.lookup b known
+                                            in maybe k (Right . read) v) fList
+          pResults = Map.mapMaybeWithKey (fillFile keys shared known auto kData nonce) nFList
+          results = Map.mapKeys (\k -> if isRight k
+                                         then let (Right v) = k
+                                              in Right ( v { path = "" } )
+                                         else k) pResults
 
-generateResponse :: Nonce -> Map.Map Domain Known -> Maybe Known ->
-  [String] -> Maybe Response -> Maybe Response
-generateResponse _ _ Nothing _ _ = Nothing
-generateResponse _ _ _ _ Nothing = Nothing
-generateResponse nonce sKnown (Just session) auto (Just response)
+generateResponse :: [Key] -> Map.Map String [String] -> Nonce ->
+  Map.Map Domain Known -> Maybe Known -> [String] -> Maybe Response ->
+  Maybe Response
+generateResponse _ _ _ _ Nothing _ _ = Nothing
+generateResponse _ _ _ _ _ _ Nothing = Nothing
+generateResponse keys kData nonce sKnown (Just session) auto (Just response)
     | valid = Just Response { destinationIdentifier = newDestID,
                 origin = read newOrigin, resNonce = nonce, csp = rCsp,
                 componentList = fromJust newComponentList,
@@ -438,11 +495,27 @@ generateResponse nonce sKnown (Just session) auto (Just response)
             fileList = rFileL }) = response
           newDestID = fromMaybe dID $ Map.lookup "dID" session
           newOrigin = fromMaybe (show dUrl) $ Map.lookup "dUrl" session
-          newComponentList = fillComponents rCList sKnown session auto nonce
-          newInstList = fillInstructions rInstructions sKnown session auto nonce
-          newFileList = fillFiles rFileL sKnown session auto nonce
+          newComponentList = fillComponents keys rCList sKnown session auto
+                               kData nonce
+          newInstList = fillInstructions keys rInstructions sKnown session auto
+                          kData nonce
+          newFileList = fillFiles keys rFileL sKnown session auto kData nonce
           valid = newDestID /= "" && newOrigin /= "" && isJust newComponentList
                     && isJust newInstList && isJust newFileList
+
+
+getNewKeys:: [Key] -> [String] ->Maybe Response -> [Key]
+getNewKeys keys [] _ = keys
+getNewKeys keys _ Nothing = keys
+getNewKeys keys kDesc (Just res) = nKeys
+    where (PageInstructions {autoList = aInst,
+            conditionalList = cInst }) = instructionList res
+          comp = concatMap cList (componentList res)
+          inst = aInst ++ cInst ++ comp
+          iContents = map (\(Instruction _ rule) -> rContents rule ) inst
+          fContents = Map.elems (Map.map fContent (fileList res))
+          contents = iContents++fContents
+          nKeys = foldl (\a v -> appendKeys (Just v) kDesc a) keys contents
 
 
 sendResponse:: Server -> Nonce -> (Server, Maybe Response)
@@ -450,11 +523,12 @@ sendResponse cServer nonce
     | null pendingReq && not expectedRes =
           let nKnown = Map.lookup nonce sSession
               pRes = Map.lookup nonce spRes
-              res = generateResponse nonce sKnown nKnown auto pRes
+              res = generateResponse keys kData nonce sKnown nKnown auto pRes
               npSession = appendSession nKnown pData pSession
+              nKeys = getNewKeys keys kDesc res
               nServer = Server { serverIdentifier = sID, autoGenerated = auto,
                           persistentData = pData, keyDesc = kDesc,
-                          trackingDesc = track, knownKeys = keys,
+                          trackingDesc = track, knownKeys = nKeys,
                           knownData = kData, serverKnowledge = sKnown,
                           serverSession = Map.delete nonce sSession,
                           serverRules = sRules, persistentSession = npSession,
@@ -483,8 +557,9 @@ serverActions cServer = results
             expectedResponses= eSResp, pendingSResponses = spRes,
             serverSession= sSession }) = cServer
           disabledReq = Map.fold (\a accum -> fst a :accum) [] eSResp
-          peRequests = map (\a -> sID ++ " Request "++ a) $ filter
-            (`notElem` disabledReq) (Map.keys $ Map.filter (not . null) sPReq)
+          peRequests = map (\a -> sID++ " -> server"++ ": Request "++ a) $
+                         filter (`notElem` disabledReq)
+                           (Map.keys $ Map.filter (not . null) sPReq)
           pResp = filter (`notElem` disabledReq)
             $ Map.keys (Map.filter null sPReq)
           pResponses = map (\k -> let sKnown = fromMaybe Map.empty

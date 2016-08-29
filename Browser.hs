@@ -16,7 +16,6 @@ import           Data.Maybe
 import           Policies
 import           Types
 
-
 {-
     Functions in charge of instantiating browsers and of getting the actions
     that can be performed at any given time useful for the Planner
@@ -24,8 +23,8 @@ import           Types
 getBrowserActions :: Browser -> [String]
 getBrowserActions = browserActions
 
-initBrowser :: String -> Visited -> Map.Map Url WebFile -> Maybe WebPage ->
-  Maybe WebPage -> [(Nonce,Rule)] -> [Rule] -> [Int] -> Browser
+initBrowser :: String -> Visited -> Map.Map (Either String Url) WebFile ->
+  Maybe WebPage -> Maybe WebPage -> [(Nonce,Rule)] -> [Rule] -> [Int] -> Browser
 initBrowser bID history cookies cWeb oWeb pRes pReq nonceL =
     Browser { browserIdentifier = bID, visitedPages = history, files = cookies,
       current = cWeb, original = oWeb, pendingResponses = pRes,
@@ -60,12 +59,17 @@ getIdFromBrowser cBrowser = bID
             pendingRequest = _, bNonceList = _}) = cBrowser
 
 
-ruleToRequest:: Rule -> String -> Nonce -> Request
-ruleToRequest cRule bID cNonce =
+ruleToRequest:: Rule -> String -> Map.Map (Either String Url) WebFile ->
+  Nonce -> Request
+ruleToRequest cRule bID bFiles cNonce =
     Request { originIdentifier = bID, destination = ruleUrl,
-      reqNonce = cNonce, method = cMethod, payload = rPayload}
+      reqNonce = cNonce, method = cMethod, payload = reqPayload}
     where ( Rule {rType = _, rMethod = cMethod, rUrl = Left ruleUrl,
             rContents = rPayload }) = cRule
+          nUrl = ruleUrl { path = ""}
+          cookies = maybe Map.empty fContent (Map.lookup (Right nUrl) bFiles)
+          reqPayload = Map.union cookies rPayload
+
 
 --Function used to transform instructions to their corresponding requests
 getRequest:: Browser-> (Browser,Maybe Request)
@@ -78,7 +82,7 @@ getRequest cBrowser
                     files = bF,current = bCW, original = bOW,
                     pendingResponses = bPR, pendingRequest = bPReq,
                     bNonceList = drop 1 bNL}, Just ( ruleToRequest
-                      (fromJust cRule) bID nonce ))
+                      (fromJust cRule) bID bF nonce ))
     where (Browser {browserIdentifier = bID, visitedPages = bVP, files = bF,
             current = bCW, original = bOW, pendingResponses = bPR,
             pendingRequest = bPReq, bNonceList = bNL})= cBrowser
@@ -203,13 +207,13 @@ newBrowserFromResponse cBrowser response rule
 
 --Function that describes what to do when a new response is received
 responseReceived::Browser -> Response -> Browser
-responseReceived cBrowser response
-    | isNothing rule = cBrowser
-    | otherwise = newBrowserFromResponse cBrowser response (fromJust rule)
+responseReceived cBrowser response = nBrowser
     where (Browser {pendingResponses = pendingRes }) = cBrowser
           url = origin response
           nonce = resNonce response
           rule = lookupRule url nonce pendingRes
+          nBrowser = maybe cBrowser (newBrowserFromResponse cBrowser response)
+                       rule
 
 
 
@@ -334,7 +338,8 @@ userInputReceived cBrowser (Address url) =
     where (Browser {browserIdentifier=bID, visitedPages = visitedWeb,
             files = fInfo, current = currentWeb, original = originalWeb,
             bNonceList = bNL}) = cBrowser
-          bData = Map.lookup url fInfo
+          cookieUrl = url { path = ""}
+          bData = Map.lookup (Right cookieUrl) fInfo
           nRule = newRule url bData
 
 userInputReceived cBrowser (Position pos) =
