@@ -1,13 +1,12 @@
-import           Browser
-import           Data.Char
-import           Data.List
-import qualified Data.Map    as Map
-import Data.Functor
-import Criterion.Measurement
 import           Attacker
-import           Debug.Trace
-import           Planner
-import           SamlServer
+import           Browser
+import           Criterion.Measurement
+import           Data.Char
+import           Data.Functor
+import           Data.List
+import qualified Data.Map              as Map
+--import           Debug.Trace
+import           SamlServer--Fix
 import           Server
 import           Types
 import           User
@@ -50,7 +49,7 @@ resSent res (x:xs) cBrowser
 
 attackerStatus:: Attacker -> Bool
 attackerStatus cAttacker
-    | any (\i -> length i <= 1) cAInfo = True
+    | any (\(_, gl) -> all null gl ) cAInfo = True
     | otherwise = False
     where cAInfo = neededInfo cAttacker
 
@@ -90,57 +89,11 @@ executeAction maxLevl cLevel cUser cBrowser sList cAttacker (flag, aList) option
             (nSList, nBrowser) = maybe (reqSList, cBrowser)
                                (\rVal -> resSent rVal reqSList cBrowser) res
             nAttacker = getInfoFromServerList cAttacker nSList
-            attack = attackerStatus cAttacker
-        if attack
-            then (attack, [option])
-            else
-                let (rFlag, rAList) = loop' maxLevl cLevel cUser nBrowser nSList nAttacker (flag , aList)
-                in if rFlag
-                    then (rFlag, option:rAList)
-                    else (rFlag, rAList)
-
-executeAction':: Int -> Int -> User -> Browser -> [Server] -> Attacker ->
-  (Bool, [String]) -> String -> (Bool, [String])
-executeAction' maxLevl cLevel cUser cBrowser sList cAttacker (flag, aList) option
-    | flag = (flag, aList)
-    | "U ->" `isPrefixOf` option = do
-        let uInput = optionToEvent option cUser
-            nBrowser = maybe cBrowser (userInputReceived cBrowser) uInput
-            attack = attackerStatus cAttacker
-        if attack
-            then (attack, [option])
-            else
-                let (rFlag, rAList) = loop'' maxLevl cLevel cUser nBrowser sList cAttacker (flag , aList)
-                in if rFlag
-                    then (rFlag, option:rAList)
-                    else (rFlag, rAList)
-
-    | "B ->" `isPrefixOf` option = do
-        let (tempBrowser, req) = browserOptionToEvent cBrowser option
-            nBrowser = maybe cBrowser (requestSent tempBrowser) req
-            nSList = maybe sList (\reqValue -> map (reqToServer reqValue) sList)
-                       req
-            nAttacker = getInfoFromServerList cAttacker nSList
             attack = attackerStatus nAttacker
         if attack
             then (attack, [option])
             else
-                let (rFlag, rAList) = loop'' maxLevl cLevel cUser nBrowser nSList nAttacker (flag , aList)
-                in if rFlag
-                    then (rFlag, option:rAList)
-                    else (rFlag, rAList)
-    | otherwise = do
-        let (tempSList, req, res) = serverListToEvent sList option
-            reqSList = maybe tempSList (\reqVal ->
-                     map (reqToServer reqVal) tempSList) req
-            (nSList, nBrowser) = maybe (reqSList, cBrowser)
-                               (\rVal -> resSent rVal reqSList cBrowser) res
-            nAttacker = getInfoFromServerList cAttacker nSList
-            attack = attackerStatus cAttacker
-        if attack
-            then (attack, [option])
-            else
-                let (rFlag, rAList) = loop'' maxLevl cLevel cUser nBrowser nSList nAttacker (flag , aList)
+                let (rFlag, rAList) = loop' maxLevl cLevel cUser nBrowser nSList nAttacker (flag , aList)
                 in if rFlag
                     then (rFlag, option:rAList)
                     else (rFlag, rAList)
@@ -150,41 +103,34 @@ loop':: Int -> Int -> User -> Browser -> [Server] -> Attacker ->
   (Bool, [String]) -> (Bool, [String])
 loop' maxLevel cLevel cUser cBrowser sList cAttacker (flag, aList)
     | flag = (flag, aList)
-    | maxLevel == cLevel = (flag, aList)
+    | maxLevel <= cLevel = (flag, aList)
     | otherwise = foldl' (executeAction maxLevel (cLevel + 1) cUser cBrowser sList cAttacker) (flag,aList) actList
     where uActions = getUserActions cUser (generateDisplay cBrowser)
           bActions = getBrowserActions cBrowser
           sActions = foldl (\accum cServer -> accum ++ getServerActions cServer) [] sList
           actList = sActions ++ bActions ++ uActions
 
-loop'':: Int -> Int -> User -> Browser -> [Server] -> Attacker ->
-  (Bool, [String]) -> (Bool, [String])
-loop'' maxLevel cLevel cUser cBrowser sList cAttacker (flag, aList)
-    | flag = (flag, aList)
-    | maxLevel == cLevel = (flag, init aList)
-    | otherwise = foldl' (executeAction' maxLevel (cLevel + 1) cUser cBrowser sList cAttacker) (flag,aList) actList
-    where uActions = getUserActions cUser (generateDisplay cBrowser)
-          bActions = getBrowserActions cBrowser
-          sActions = foldl (\accum cServer -> accum ++ getServerActions cServer) [] sList
-          actList = uActions ++ bActions ++ sActions
 
 ploop':: Int -> User -> Browser -> [Server] -> Attacker -> IO ()
-ploop' maxLevel cUser cBrowser sList cAttacker = do
-    let (flag, aList) = loop' maxLevel 0 cUser cBrowser sList cAttacker (False, [])
-    if flag
-        then do
-            putStrLn "The attack trace is the following"
-            putStr $ unlines aList
-    else putStrLn "No attack found :("
-
-ploop'':: Int -> User -> Browser -> [Server] -> Attacker -> IO ()
-ploop'' maxLevel cUser cBrowser sList cAttacker = do
-        let (flag, aList) = loop'' maxLevel 0 cUser cBrowser sList cAttacker (False, [])
+ploop' maxLevel cUser cBrowser sList cAttacker
+    |maxLevel <= 11 = do
+        let (flag, aList) = loop' maxLevel 0 cUser cBrowser sList cAttacker
+                                (False, [])
         if flag
             then do
                 putStrLn "The attack trace is the following"
-                putStr $ unlines  aList
-        else putStrLn "No attack found :("
+                putStr $ unlines aList
+            else putStrLn "No attack found :("
+    | otherwise = do
+        let (flag, aList) = foldl' (\accum val -> loop' val 0 cUser cBrowser
+                                                sList cAttacker accum)
+                                    (False, []) [12 .. maxLevel]
+        if flag
+            then do
+                putStrLn "The attack trace is the following"
+                putStr $ unlines aList
+            else putStrLn "No attack found :("
+
 
 loop:: User -> Browser -> [Server] -> Attacker-> IO ()
 loop cUser cBrowser sList cAttacker= do
@@ -194,8 +140,9 @@ loop cUser cBrowser sList cAttacker= do
     if all isDigit level
         then do
             let maxLevel = read level
-            secs <$> time_ (ploop' maxLevel cUser cBrowser sList cAttacker) >>= print
-            secs <$> time_ (ploop'' maxLevel cUser cBrowser sList cAttacker) >>= print
+            initializeTime
+            ploop' maxLevel cUser cBrowser sList cAttacker
+            secs <$> getCPUTime >>= print
         else do
             putStrLn "Please enter a valid number"
             loop cUser cBrowser sList cAttacker
@@ -217,4 +164,5 @@ main = do
           myUser = initUser "user" gKnown uDKnown kUrls
           myBrowser = initEmptyBrowser "browser"
           (myServers, aGoal) = getServers
-          myAttacker = initAttacker "attacker" ["rp"] aGoal [] Map.empty
+          aKnown = Map.fromList [("rp", "rp2")]
+          myAttacker = initAttacker "attacker" False [] ["rp"] [] aGoal []  Map.empty aKnown
